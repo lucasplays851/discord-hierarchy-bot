@@ -1,1 +1,25 @@
-
+{
+  "name": "discord-hierarchy-bot",
+  "version": "1.0.0",
+  "description": "Bot hierárquico para Discord com sistema de recrutamento, promoção e logs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "hierarchy",
+    "roleplay",
+    "management"
+  ],
+  "author": "Seu Nome",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.14.1"
+  },
+  "engines": {
+    "node": ">=16.9.0"
+  }
+}
