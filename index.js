@@ -1,4 +1,5 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ActionRowBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const express = require('express');
 
 // ============ CONFIGURAÇÕES DO BOT ============
 const client = new Client({
@@ -15,15 +16,14 @@ let botConfig = {
     activeHierarchy: 'pmmg',
     logChannel: null,
     robloxTimeEnabled: false,
-    recruitRoles: [], // IDs dos cargos que podem recrutar
-    promoteRoles: [], // IDs dos cargos que podem promover
-    citizenRole: null, // ID do cargo "Cidadão"
+    recruitRoles: [],
+    promoteRoles: [],
+    citizenRole: null,
     minRobloxHours: 10
 };
 
-// Base de dados simples para cooldowns e tempos
-let userData = {}; // { userId: { joinDate: Date, lastAction: Date, currentRank: string } }
-let cooldowns = {}; // { userId: { lastPromotion: Date, lastDemotion: Date } }
+let userData = {};
+let cooldowns = {};
 
 // ============ HIERARQUIAS E PATENTES ============
 const hierarchies = {
@@ -126,7 +126,6 @@ function canPromote(userId, currentRank) {
         };
     }
     
-    // Verificar cooldown de promoção (24h)
     const cooldown = cooldowns[userId];
     if (cooldown && cooldown.lastPromotion) {
         const hoursSinceLastPromotion = (Date.now() - cooldown.lastPromotion) / (1000 * 60 * 60);
@@ -149,7 +148,6 @@ function canDemote(userId, currentRank) {
         return { canDemote: false, reason: "Esta é a patente mínima. Use demissão para remover da corporação" };
     }
     
-    // Verificar cooldown de rebaixamento (24h)
     const cooldown = cooldowns[userId];
     if (cooldown && cooldown.lastDemotion) {
         const hoursSinceLastDemotion = (Date.now() - cooldown.lastDemotion) / (1000 * 60 * 60);
@@ -185,7 +183,7 @@ function logAction(guild, action, officer, target, details) {
     if (details.newRank) embed.addFields({ name: '📈 Nova Patente', value: details.newRank, inline: true });
     if (details.reason) embed.addFields({ name: '📝 Motivo', value: details.reason, inline: false });
     
-    logChannel.send({ embeds: [embed] });
+    logChannel.send({ embeds: [embed] }).catch(console.error);
 }
 
 // ============ COMANDOS SLASH ============
@@ -260,238 +258,9 @@ const commands = [
 client.once('ready', async () => {
     console.log(`✅ Bot ${client.user.tag} está online!`);
     
-    // Registrar comandos slash
     try {
         console.log('🔄 Registrando comandos slash...');
-        await interaction.reply({
-            content: `⚠️ **${targetUser.tag}** foi rebaixado!\n` +
-                    `📉 **De:** ${currentRank.name}\n` +
-                    `📈 **Para:** ${previousRank.name}\n` +
-                    `📝 **Motivo:** ${reason}`,
-            ephemeral: false
-        });
-        
-    } catch (error) {
-        await interaction.reply({ 
-            content: '❌ Erro ao alterar os cargos do usuário.', 
-            ephemeral: true 
-        });
-    }
-}
-
-async function handleFireCommand(interaction) {
-    const targetUser = interaction.options.getUser('usuario');
-    const reason = interaction.options.getString('motivo');
-    const member = await interaction.guild.members.fetch(targetUser.id);
-    
-    // Verificar permissões
-    const hasPermission = interaction.member.permissions.has(PermissionFlagsBits.ManageRoles) || 
-                         botConfig.promoteRoles.some(roleId => interaction.member.roles.cache.has(roleId));
-    
-    if (!hasPermission) {
-        return await interaction.reply({ 
-            content: '❌ Você não tem permissão para demitir membros.', 
-            ephemeral: true 
-        });
-    }
-    
-    // Encontrar cargo atual
-    const hierarchy = getCurrentHierarchy();
-    const currentRole = member.roles.cache.find(role => 
-        hierarchy.ranks.some(rank => rank.name === role.name)
-    );
-    
-    if (!currentRole) {
-        return await interaction.reply({ 
-            content: '❌ Este usuário não faz parte da corporação.', 
-            ephemeral: true 
-        });
-    }
-    
-    const currentRank = getRankByName(currentRole.name);
-    
-    try {
-        // Remover cargo hierárquico
-        await member.roles.remove(currentRole);
-        
-        // Adicionar cargo de cidadão se configurado
-        if (botConfig.citizenRole) {
-            const citizenRole = interaction.guild.roles.cache.get(botConfig.citizenRole);
-            if (citizenRole) {
-                await member.roles.add(citizenRole);
-            }
-        }
-        
-        // Remover do sistema
-        delete userData[targetUser.id];
-        delete cooldowns[targetUser.id];
-        
-        // Log da ação
-        logAction(interaction.guild, 'DEMISSÃO', interaction.user, targetUser, {
-            oldRank: currentRank.name,
-            reason: reason,
-            color: '#ff0000'
-        });
-        
-        await interaction.reply({
-            content: `🚫 **${targetUser.tag}** foi demitido da corporação!\n` +
-                    `📉 **Cargo removido:** ${currentRank.name}\n` +
-                    `📝 **Motivo:** ${reason}`,
-            ephemeral: false
-        });
-        
-    } catch (error) {
-        await interaction.reply({ 
-            content: '❌ Erro ao remover o cargo do usuário.', 
-            ephemeral: true 
-        });
-    }
-}
-
-async function handleHierarchyCommand(interaction) {
-    const hierarchy = getCurrentHierarchy();
-    
-    const embed = new EmbedBuilder()
-        .setTitle(`🏛️ ${hierarchy.name}`)
-        .setDescription('Estrutura hierárquica atual da corporação')
-        .setColor('#0099ff')
-        .setTimestamp();
-    
-    let hierarchyText = '';
-    hierarchy.ranks.reverse().forEach((rank, index) => {
-        const emoji = index === 0 ? '👑' : index === 1 ? '⭐' : index === 2 ? '🔸' : '▫️';
-        hierarchyText += `${emoji} **${rank.name}** (Nível ${rank.level})\n`;
-        hierarchyText += `   └ Tempo mínimo: ${rank.minDays} dias\n\n`;
-    });
-    
-    embed.setDescription(hierarchyText);
-    
-    await interaction.reply({ embeds: [embed] });
-}
-
-async function handleProfileCommand(interaction) {
-    const targetUser = interaction.options.getUser('usuario') || interaction.user;
-    const member = await interaction.guild.members.fetch(targetUser.id);
-    
-    // Verificar se faz parte da corporação
-    const hierarchy = getCurrentHierarchy();
-    const currentRole = member.roles.cache.find(role => 
-        hierarchy.ranks.some(rank => rank.name === role.name)
-    );
-    
-    if (!currentRole) {
-        return await interaction.reply({ 
-            content: '❌ Este usuário não faz parte da corporação.', 
-            ephemeral: true 
-        });
-    }
-    
-    const currentRank = getRankByName(currentRole.name);
-    const userData_user = userData[targetUser.id];
-    
-    const embed = new EmbedBuilder()
-        .setTitle(`👤 Perfil de ${targetUser.tag}`)
-        .setThumbnail(targetUser.displayAvatarURL())
-        .setColor(currentRank.color)
-        .addFields(
-            { name: '🏛️ Hierarquia', value: hierarchy.name, inline: true },
-            { name: '⭐ Patente Atual', value: currentRank.name, inline: true },
-            { name: '📊 Nível', value: currentRank.level.toString(), inline: true }
-        );
-    
-    if (userData_user) {
-        const joinDate = new Date(userData_user.joinDate);
-        const daysSinceJoin = Math.floor((Date.now() - userData_user.joinDate) / (1000 * 60 * 60 * 24));
-        
-        embed.addFields(
-            { name: '📅 Data de Ingresso', value: `<t:${Math.floor(joinDate.getTime() / 1000)}:D>`, inline: true },
-            { name: '⏱️ Tempo de Serviço', value: `${daysSinceJoin} dias`, inline: true }
-        );
-        
-        // Verificar se pode ser promovido
-        const promotionCheck = canPromote(targetUser.id, currentRank.name);
-        if (promotionCheck.canPromote) {
-            embed.addFields({ name: '📈 Status', value: '✅ Elegível para promoção', inline: false });
-        } else {
-            embed.addFields({ name: '📈 Status', value: `⏳ ${promotionCheck.reason}`, inline: false });
-        }
-    }
-    
-    await interaction.reply({ embeds: [embed] });
-}
-
-// ============ SISTEMA DE VERIFICAÇÃO ROBLOX (OPCIONAL) ============
-async function checkRobloxPlaytime(userId) {
-    if (!botConfig.robloxTimeEnabled) return true;
-    
-    // Esta função seria implementada com uma API do Roblox
-    // Por enquanto, retorna true (aprovado)
-    // Implementação exemplo com Bloxlink ou RoVer:
-    /*
-    try {
-        const response = await fetch(`https://api.bloxlink.com/v1/user/${userId}`);
-        const data = await response.json();
-        
-        if (data.robloxId) {
-            // Verificar tempo de jogo via API do Roblox
-            // Se tempo >= botConfig.minRobloxHours, retornar true
-        }
-        
-        return false; // Não tem horas suficientes
-    } catch (error) {
-        return false; // Erro na verificação
-    }
-    */
-    
-    return true;
-}
-
-// ============ SISTEMA DE BACKUP (OPCIONAL) ============
-function saveData() {
-    // Em produção, você poderia salvar em um banco de dados
-    // ou arquivo JSON para persistir os dados
-    const data = {
-        botConfig,
-        userData,
-        cooldowns
-    };
-    
-    // Exemplo: fs.writeFileSync('backup.json', JSON.stringify(data, null, 2));
-    console.log('💾 Dados salvos em memória');
-}
-
-function loadData() {
-    // Em produção, carregar dados salvos
-    // const data = JSON.parse(fs.readFileSync('backup.json', 'utf8'));
-    // botConfig = data.botConfig;
-    // userData = data.userData;
-    // cooldowns = data.cooldowns;
-    console.log('📁 Dados carregados');
-}
-
-// Salvar dados a cada 5 minutos (opcional)
-setInterval(saveData, 5 * 60 * 1000);
-
-// ============ TRATAMENTO DE ERROS ============
-client.on('error', error => {
-    console.error('❌ Erro no cliente Discord:', error);
-});
-
-process.on('unhandledRejection', error => {
-    console.error('❌ Erro não tratado:', error);
-});
-
-process.on('uncaughtException', error => {
-    console.error('❌ Exceção não capturada:', error);
-    process.exit(1);
-});
-
-// ============ INICIALIZAÇÃO ============
-// Carregar dados salvos (se houver)
-loadData();
-
-// Login do bot
-client.login(process.env.DISCORD_TOKEN); client.application?.commands.set(commands);
+        await client.application?.commands.set(commands);
         console.log('✅ Comandos registrados com sucesso!');
     } catch (error) {
         console.error('❌ Erro ao registrar comandos:', error);
@@ -508,7 +277,7 @@ client.on('interactionCreate', async interaction => {
     } catch (error) {
         console.error('❌ Erro na interação:', error);
         if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ content: '❌ Ocorreu um erro ao processar sua solicitação.', ephemeral: true });
+            await interaction.reply({ content: '❌ Ocorreu um erro ao processar sua solicitação.', ephemeral: true }).catch(console.error);
         }
     }
 });
@@ -624,7 +393,7 @@ async function handleConfigMenuSelection(interaction, selection) {
         case 'set_log_channel':
             await interaction.update({
                 content: `📝 **Canal de logs atual:** ${botConfig.logChannel ? `<#${botConfig.logChannel}>` : 'Não configurado'}\n\n` +
-                        '❗ **Para alterar:** Use o comando `/configuracao` novamente e mencione o canal desejado.',
+                        '❗ **Para alterar:** Mencione o canal desejado na próxima mensagem.',
                 components: [],
                 embeds: []
             });
@@ -664,7 +433,6 @@ async function handleRecruitCommand(interaction) {
     const reason = interaction.options.getString('motivo') || 'Não informado';
     const member = await interaction.guild.members.fetch(targetUser.id);
     
-    // Verificar permissões
     const hasPermission = interaction.member.permissions.has(PermissionFlagsBits.ManageRoles) || 
                          botConfig.recruitRoles.some(roleId => interaction.member.roles.cache.has(roleId));
     
@@ -675,7 +443,6 @@ async function handleRecruitCommand(interaction) {
         });
     }
     
-    // Verificar se já está na corporação
     const hierarchy = getCurrentHierarchy();
     const hasHierarchyRole = hierarchy.ranks.some(rank => 
         member.roles.cache.find(role => role.name === rank.name)
@@ -688,12 +455,10 @@ async function handleRecruitCommand(interaction) {
         });
     }
     
-    // Recrutar (dar o primeiro cargo da hierarquia)
     const initialRank = hierarchy.ranks[0];
     let initialRole = interaction.guild.roles.cache.find(role => role.name === initialRank.name);
     
     if (!initialRole) {
-        // Criar o cargo se não existir
         try {
             initialRole = await interaction.guild.roles.create({
                 name: initialRank.name,
@@ -711,14 +476,12 @@ async function handleRecruitCommand(interaction) {
     try {
         await member.roles.add(initialRole);
         
-        // Registrar usuário no sistema
         userData[targetUser.id] = {
             joinDate: Date.now(),
             lastAction: Date.now(),
             currentRank: initialRank.name
         };
         
-        // Log da ação
         logAction(interaction.guild, 'RECRUTAMENTO', interaction.user, targetUser, {
             newRank: initialRank.name,
             reason: reason,
@@ -745,7 +508,6 @@ async function handlePromoteCommand(interaction) {
     const reason = interaction.options.getString('motivo') || 'Não informado';
     const member = await interaction.guild.members.fetch(targetUser.id);
     
-    // Verificar permissões
     const hasPermission = interaction.member.permissions.has(PermissionFlagsBits.ManageRoles) || 
                          botConfig.promoteRoles.some(roleId => interaction.member.roles.cache.has(roleId));
     
@@ -756,7 +518,6 @@ async function handlePromoteCommand(interaction) {
         });
     }
     
-    // Encontrar cargo atual
     const hierarchy = getCurrentHierarchy();
     const currentRole = member.roles.cache.find(role => 
         hierarchy.ranks.some(rank => rank.name === role.name)
@@ -779,7 +540,6 @@ async function handlePromoteCommand(interaction) {
         });
     }
     
-    // Promover
     const nextRank = promotionCheck.nextRank;
     let nextRole = interaction.guild.roles.cache.find(role => role.name === nextRank.name);
     
@@ -802,17 +562,14 @@ async function handlePromoteCommand(interaction) {
         await member.roles.remove(currentRole);
         await member.roles.add(nextRole);
         
-        // Atualizar dados do usuário
         if (userData[targetUser.id]) {
             userData[targetUser.id].currentRank = nextRank.name;
             userData[targetUser.id].lastAction = Date.now();
         }
         
-        // Registrar cooldown
         if (!cooldowns[targetUser.id]) cooldowns[targetUser.id] = {};
         cooldowns[targetUser.id].lastPromotion = Date.now();
         
-        // Log da ação
         logAction(interaction.guild, 'PROMOÇÃO', interaction.user, targetUser, {
             oldRank: currentRank.name,
             newRank: nextRank.name,
@@ -841,7 +598,6 @@ async function handleDemoteCommand(interaction) {
     const reason = interaction.options.getString('motivo');
     const member = await interaction.guild.members.fetch(targetUser.id);
     
-    // Verificar permissões
     const hasPermission = interaction.member.permissions.has(PermissionFlagsBits.ManageRoles) || 
                          botConfig.promoteRoles.some(roleId => interaction.member.roles.cache.has(roleId));
     
@@ -852,7 +608,6 @@ async function handleDemoteCommand(interaction) {
         });
     }
     
-    // Encontrar cargo atual
     const hierarchy = getCurrentHierarchy();
     const currentRole = member.roles.cache.find(role => 
         hierarchy.ranks.some(rank => rank.name === role.name)
@@ -875,7 +630,6 @@ async function handleDemoteCommand(interaction) {
         });
     }
     
-    // Rebaixar
     const previousRank = demotionCheck.previousRank;
     let previousRole = interaction.guild.roles.cache.find(role => role.name === previousRank.name);
     
@@ -898,17 +652,14 @@ async function handleDemoteCommand(interaction) {
         await member.roles.remove(currentRole);
         await member.roles.add(previousRole);
         
-        // Atualizar dados do usuário
         if (userData[targetUser.id]) {
             userData[targetUser.id].currentRank = previousRank.name;
             userData[targetUser.id].lastAction = Date.now();
         }
         
-        // Registrar cooldown
         if (!cooldowns[targetUser.id]) cooldowns[targetUser.id] = {};
         cooldowns[targetUser.id].lastDemotion = Date.now();
         
-        // Log da ação
         logAction(interaction.guild, 'REBAIXAMENTO', interaction.user, targetUser, {
             oldRank: currentRank.name,
             newRank: previousRank.name,
@@ -916,4 +667,32 @@ async function handleDemoteCommand(interaction) {
             color: '#ff8800'
         });
         
-        await
+        await interaction.reply({
+            content: `⚠️ **${targetUser.tag}** foi rebaixado!\n` +
+                    `📉 **De:** ${currentRank.name}\n` +
+                    `📈 **Para:** ${previousRank.name}\n` +
+                    `📝 **Motivo:** ${reason}`,
+            ephemeral: false
+        });
+        
+    } catch (error) {
+        await interaction.reply({ 
+            content: '❌ Erro ao alterar os cargos do usuário.', 
+            ephemeral: true 
+        });
+    }
+}
+
+async function handleFireCommand(interaction) {
+    const targetUser = interaction.options.getUser('usuario');
+    const reason = interaction.options.getString('motivo');
+    const member = await interaction.guild.members.fetch(targetUser.id);
+    
+    const hasPermission = interaction.member.permissions.has(PermissionFlagsBits.ManageRoles) || 
+                         botConfig.promoteRoles.some(roleId => interaction.member.roles.cache.has(roleId));
+    
+    if (!hasPermission) {
+        return await interaction.reply({ 
+            content: '❌ Você não tem permissão para demitir membros.', 
+            ephemeral: true 
+        });
